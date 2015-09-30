@@ -1,0 +1,138 @@
+#coding=utf-8
+''' Created on 2015-9-28
+
+    author: gepeng
+'''
+import struct
+import redis
+import socket
+import ConfigParser
+import time, threading
+import logging
+#import string
+
+NGX_HTTP_ACCSRV_WEBSOCKET_LAST_FRAME =  0x8
+NGX_HTTP_ACCSRV_WEBSOCKET_TEXT_OPCODE = 0x1
+NGX_HTTP_ACCSRV_WEBSOCKET_BIN_OPCODE =  0x2
+NGX_HTTP_ACCSRV_WEBSOCKET_CLOSE_OPCODE = 0x8
+NGX_HTTP_ACCSRV_WEBSOCKET_PING_OPCODE  = 0x9
+NGX_HTTP_ACCSRV_WEBSOCKET_P0NG_OPCODE  = 0xA
+WEBSOCKET_TEXT_LAST_FRAME_BYTE = NGX_HTTP_ACCSRV_WEBSOCKET_TEXT_OPCODE  | (NGX_HTTP_ACCSRV_WEBSOCKET_LAST_FRAME << 4);
+WEBSOCKET_BIN_LAST_FRAME_BYTE  = NGX_HTTP_ACCSRV_WEBSOCKET_BIN_OPCODE  | (NGX_HTTP_ACCSRV_WEBSOCKET_LAST_FRAME << 4);
+ACC_TEST_P2P = 0
+
+def acc_worker_thread():
+    physical_id = get_physicalid()
+    while True:
+        #print threading.current_thread().name
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((acc_ip,acc_port))
+            #s.setblocking(0) 
+            ''' Connect to access server. '''
+            SendMsg = "GET /ws HTTP/1.1 \r\nOrigin: null\r\nSec-WebSocket-Key: 3+mnb09pHUnbmFYRtJrnew== \r\nConnection: Upgrade \r\nUpgrade: Websocket\r\nSec-WebSocket-Version: 13\r\nUser-Agent: Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko\r\nHost: 172.18.32.14:8989\r\nDNT: 1\r\nCache-Control: no-cache \r\n\r\n"
+            #print str(time.time()) + " msg sent!"
+            s.send(SendMsg)
+            MsgBuffer = []
+            d = s.recv(1024)
+            MsgBuffer.append(d)
+            '''Insert device information to redis'''
+            accsrv_redis_setexkey(3,physical_id,physical_id, 360)
+            '''Send device information to access server.'''
+            SendMsg = "{\"type\":1, \"length\":0, \"cmd_version\": \"v0.0.0.1\", \"data_type\": 0, \"token_id\":\"" +physical_id+ "\", \"client_type\": 0, \"client_version\": \"0.0.0.1\", \"client_id\": \"" +physical_id+ "\"}"
+            accsrv_websocket_msg(s, SendMsg)
+            SendTime = time.time()
+            
+            while True:
+                MsgBuffer = []
+                d = s.recv(1024)
+                MsgBuffer.append(d)
+                RecvMsg = ''.join(MsgBuffer)
+                print RecvMsg
+
+                while True:
+                    ttl = time.time() - SendTime
+                    #print "ttl = " + str(ttl) + "\n"
+                    if ttl>5:
+                        SendTime = time.time()
+                        SendMsg = "{\"type\":2, \"length\":0}"
+                        #print SendMsg
+                        accsrv_websocket_msg(s, SendMsg)
+                        break
+                    if ttl>3:
+                        SendTime = time.time()
+                        if ACC_TEST_P2P:
+                            SendMsg = "{\"type\":3, \"length\":0,\"message_id\":0,\"cmd\": 16777216,  \"from_id\":\""+physical_id+"\", \"to_id\":\""+physical_id+"\", \"stun_info\":\"test----\", \"channel_id\":0, \"media_type\":0}"
+                        else:
+                            SendMsg = "{\"type\":3, \"length\":0,\"message_id\":0,\"cmd\": 33554439,  \"from_id\":\""+physical_id+"\", \"to_id\":\""+physical_id+"\", \"dev_id\":\""+physical_id+"\", \"channel_id\":0, \"media_type\":0}"
+                        accsrv_websocket_msg(s, SendMsg)
+                        break
+                    else:
+                        time.sleep(1)
+            
+        except socket.error or socket.herror or socket.gaierror or socket.timeout, e:
+            logging.exception(e)
+            if s:
+                s.close()
+            time.sleep(5)
+            continue
+        
+        
+        
+def accsrv_websocket_msg(server_socket, msg):
+    '''to-do'''
+    len_s = len(msg)
+    if len_s>125:
+        len_s=socket.htons(len_s)
+        websocket_msg = struct.pack('BBH%ds'%len_s,WEBSOCKET_TEXT_LAST_FRAME_BYTE,0x7e,len_s,msg)
+    else:
+        len_s=socket.htons(len_s)
+        websocket_msg = struct.pack('BH%ds'%len_s,WEBSOCKET_TEXT_LAST_FRAME_BYTE,len_s,msg)
+        
+    server_socket.send(websocket_msg)
+
+
+def accsrv_redis_setexkey(db, key, value, timeout):
+    try:
+        redis_pool = redis.ConnectionPool(host='172.18.33.35', port=6379,db=3)
+        redis_client = redis.Redis(connection_pool= redis_pool)
+        redis_client.setex(name=key, time=timeout, value=value)
+        redis_pool.disconnect()
+    except StandardError, e:
+        logging.exception(e)
+        
+def get_physicalid():
+    thread_id = threading.current_thread().ident
+    time_now = int(time.time())
+    physical_id = str(thread_id)+str(time_now)
+    print "physical_id: "+physical_id
+    return physical_id
+
+if __name__ == "__main__":
+    config = ConfigParser.ConfigParser()
+    f = open(r'config.ini',"r")
+    config.readfp(f)
+    acc_ip = config.get("global","acc_ip")
+    acc_port = int(config.get("global","acc_port"))
+    number = int(config.get("global","number"))
+    acc_test = (acc_ip, acc_port)
+    
+    threads = []
+    for i in range(number):
+        threads.append(threading.Thread(target=acc_worker_thread, name='AccWorker'))
+        #time.sleep(1)
+        
+    for t in threads:
+        t.setDaemon(True)
+        t.start()
+        time.sleep(5)
+            
+    for t in threads:
+        t.join()
+        
+    while True:
+        time.sleep(10)
+        
+        
+    
+    
