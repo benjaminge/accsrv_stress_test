@@ -84,10 +84,10 @@ def accsrv_websocket_msg(server_socket, msg):
     len_s = len(msg)
     if len_s>125:
         len_s=socket.htons(len_s)
-        websocket_msg = struct.pack('BBH%ds'%len_s,WEBSOCKET_TEXT_LAST_FRAME_BYTE,0x7e,len_s,msg)
+        websocket_msg = struct.pack('BBH%ds'%len(msg),WEBSOCKET_TEXT_LAST_FRAME_BYTE,0x7e,len_s,msg)
     else:
         len_s=socket.htons(len_s)
-        websocket_msg = struct.pack('BH%ds'%len_s,WEBSOCKET_TEXT_LAST_FRAME_BYTE,len_s,msg)
+        websocket_msg = struct.pack('BH%ds'%len(msg),WEBSOCKET_TEXT_LAST_FRAME_BYTE,len_s,msg)
         
     server_socket.send(websocket_msg)
 
